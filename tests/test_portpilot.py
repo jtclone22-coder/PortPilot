@@ -88,14 +88,24 @@ class StopTests(unittest.TestCase):
                 system.stop(listener, runner=FakeRun({}))
 
     def test_stop_uses_taskkill(self) -> None:
-        fake = FakeRun({"taskkill": b"SUCCESS: Sent termination signal to process with PID 8840."})
+        fake = FakeRun({"netstat": NETSTAT.encode(), "tasklist": TASKLIST.encode(),
+                        "taskkill": b"SUCCESS: Sent termination signal to process with PID 8840."})
         message = system.stop(system.Listener("TCP", "127.0.0.1", 5173, 8840, "node.exe"), runner=fake)
         self.assertEqual(fake.calls[-1], ["taskkill", "/PID", "8840", "/T"])
         self.assertIn("SUCCESS", message)
         system.stop(system.Listener("TCP", "127.0.0.1", 5173, 8840, "node.exe"), force=True, runner=fake)
         self.assertEqual(fake.calls[-1][-1], "/F")
         with self.assertRaises(RuntimeError):
-            system.stop(system.Listener("TCP", "127.0.0.1", 5173, 8840, "node.exe"), runner=FakeRun({}, returncode=128))
+            system.stop(system.Listener("TCP", "127.0.0.1", 5173, 8840, "node.exe"),
+                        runner=FakeRun({"netstat": NETSTAT.encode(), "tasklist": TASKLIST.encode()}, returncode=128))
+
+    def test_stop_looks_again_before_stopping(self) -> None:
+        later = NETSTAT.replace("LISTENING       8840", "LISTENING       9001")   # node exited; the PID moved on
+        fake = FakeRun({"netstat": later.encode(), "tasklist": TASKLIST.encode(), "taskkill": b"SUCCESS"})
+        with self.assertRaises(RuntimeError) as caught:
+            system.stop(system.Listener("TCP", "127.0.0.1", 5173, 8840, "node.exe"), runner=fake)
+        self.assertIn("nothing was stopped", str(caught.exception))
+        self.assertNotIn("taskkill", [c[0] for c in fake.calls])
 
     def test_free_port_skips_a_taken_one(self) -> None:
         with socket.socket() as taken:
@@ -103,6 +113,15 @@ class StopTests(unittest.TestCase):
             port = taken.getsockname()[1]
             taken.listen(1)
             self.assertNotEqual(system.free_port(port, port + 50), port)
+
+    def test_free_port_skips_ports_other_programs_hold_anywhere(self) -> None:
+        busy = "  TCP    0.0.0.0:{0}           0.0.0.0:0              LISTENING       9001\n" \
+               "  TCP    [::1]:{1}             [::]:0                 LISTENING       8840\n"
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            start = probe.getsockname()[1]
+        fake = FakeRun({"netstat": (NETSTAT + busy.format(start, start + 1)).encode(), "tasklist": TASKLIST.encode()})
+        self.assertNotIn(system.free_port(start, start + 50, runner=fake), (start, start + 1))
 
 
 if __name__ == "__main__":

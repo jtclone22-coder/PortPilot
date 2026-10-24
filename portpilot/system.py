@@ -122,11 +122,18 @@ def stop_refusal(listener: Listener) -> str:
     return ""
 
 
-def stop(listener: Listener, force: bool = False, runner=subprocess.run) -> str:
-    """Ask the process to close (taskkill /T); with force=True, end it (/F). Callers confirm with the user first."""
+def stop(listener: Listener, force: bool = False, runner=subprocess.run, recheck: bool = True) -> str:
+    """Ask the process to close (taskkill /T); with force=True, end it (/F). Callers confirm with the user first.
+    The port is looked up again first: if that program has exited, Windows may already have given its PID to another
+    one, and the list on screen can be minutes old."""
     reason = stop_refusal(listener)
     if reason:
         raise PermissionError(f"Not stopping PID {listener.pid}: {reason}.")
+    if recheck:
+        now = [l for l in listeners(runner, include_udp=True) if l.port == listener.port and l.pid == listener.pid]
+        if not now or (listener.process and now[0].process.lower() != listener.process.lower()):
+            raise RuntimeError(f"{listener.process or 'PID %d' % listener.pid} isn't on port {listener.port} any more (it may "
+                               "have exited, and Windows reuses process numbers). Refresh the list; nothing was stopped.")
     command = ["taskkill", "/PID", str(listener.pid), "/T"] + (["/F"] if force else [])
     result = _run(command, runner)
     text = (_decode(result.stdout) + _decode(result.stderr)).strip()
@@ -135,14 +142,30 @@ def stop(listener: Listener, force: bool = False, runner=subprocess.run) -> str:
     return text or f"Stopped PID {listener.pid}."
 
 
-def free_port(start: int = 3000, end: int = 9999, host: str = "127.0.0.1") -> int:
+def _can_bind(family: int, address: tuple, no_ipv6_ok: bool = False) -> bool:
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.bind(address)
+        return True
+    except OSError as exc:
+        # no IPv6 on this PC: nothing can be listening on ::1 either
+        return no_ipv6_ok and getattr(exc, "winerror", exc.errno) in (10047, 10049, 97, 99)
+
+
+def free_port(start: int = 3000, end: int = 9999, host: str = "127.0.0.1", runner=subprocess.run) -> int:
+    """A port nothing listens on. A test bind alone isn't enough: Windows lets 127.0.0.1 bind beside a program that
+    holds the port on 0.0.0.0, and Vite/Node often listen on ::1 only. So netstat's list (every address, every user)
+    is checked too, and ::1 is tried as well as 127.0.0.1."""
+    try:
+        taken = {l.port for l in listeners(runner)}
+    except (OSError, subprocess.SubprocessError):
+        taken = set()
     for port in range(start, end + 1):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-            try:
-                probe.bind((host, port))
-            except OSError:
-                continue
-            return port
+        if port in taken or not _can_bind(socket.AF_INET, (host, port)):
+            continue
+        if socket.has_ipv6 and not _can_bind(socket.AF_INET6, ("::1", port), no_ipv6_ok=True):
+            continue
+        return port
     raise RuntimeError(f"no free port between {start} and {end}")
 
 
