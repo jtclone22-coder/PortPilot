@@ -15,7 +15,7 @@ The same window shows your **WSL distros** (with a shutdown button), running **D
 
 ## Download
 
-Get **PortPilot-0.1.0-windows.zip** from [Releases](../../releases/latest), unzip it anywhere and double-click **PortPilot.exe** in the PortPilot folder. Nothing to install, and no Python needed.
+Get **PortPilot-0.1.1-windows.zip** from [Releases](../../releases/latest), unzip it anywhere and double-click **PortPilot.exe** in the PortPilot folder. Nothing to install, and no Python needed.
 
 Windows may say "Windows protected your PC" because the app is new: click **More info**, then **Run anyway**.
 
